@@ -3,16 +3,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class SpectralGraphConv(nn.Module):
-    def __init__(self, in_features, out_features, A):
+    def __init__(self, out_channels, A):
         """
         Args:
-            in_features: 输入特征维度（例如128）
-            out_features: 输出特征维度（例如你希望经过图卷积后的特征数）
+            out_channels
             A: 邻接矩阵，形状 (N, N) ，这里 N=64
         """
         super(SpectralGraphConv, self).__init__()
-        self.in_features = in_features
-        self.out_features = out_features
+        self.out_channels = out_channels
         self.A = A  # 邻接矩阵, torch.Tensor, shape: (N, N)
         self.N = A.shape[0]  # 节点数（64）
 
@@ -33,28 +31,45 @@ class SpectralGraphConv(nn.Module):
         self.register_buffer('Lambda', Lambda.float())
 
         # 3. 定义谱域滤波器参数 g_θ(Λ)
-        #    这里我们定义一个形状为 (N,) 的向量，每个元素对应一个谱分量的缩放因子，
-        #    该参数对所有输入通道均相同，也可以扩展为 (N, out_features) 来实现多个滤波器。
-        self.theta = nn.Parameter(torch.randn(self.N))
+        #    这里将 theta 定义为形状 (N, out_channels) 的矩阵，
+        #    表示对于每个频率分量（共 N 个），针对每个输出通道都有一个可学习的缩放因子
+        self.theta = nn.Parameter(torch.randn(self.N, self.out_channels))
 
     def forward(self, x):
         """
         Args:
-            x: 输入信号，形状 (batch_size, N, in_features)
+            x: 输入信号，形状 (batch_size, C, N, T=Time)
         Returns:
-            y: 输出信号，形状 (batch_size, N, out_features)
+            y: 输出信号，形状 (batch_size, C, N, T=Time)
         """
-        # ① 图傅里叶变换: 将节点信号 x 从节点域转换到频域
-        #    x 的形状为 (batch, N, in_features)，U 的形状为 (N, N)。
-        #    这里使用 U^T * x。注意：torch.bmm 为批量矩阵乘法。
-        x_hat = torch.bmm(self.U.t().expand(x.shape[0], -1, -1), x)  # (batch, N, in_features)
+        B, C, N, T = x.shape  # B: batch_size, C: in_channels, N: 节点数, T: 时间步数
+        # ────────────── ① 图傅里叶变换 ──────────────
+        # 将节点域信号转换到频域，即对每个 (B, C, T) 上的节点信号应用 U^T
+        # x 的形状为 (B, C, N, T)，这里使用 einsum 完成矩阵乘法：
+        #   对于每个 b, c, t，计算 x_hat[b, c, :, t] = U^T @ x[b, c, :, t]
+        # 得到 x_hat 的形状为 (B, C, N, T)
+        x_hat = torch.einsum('ij, bcjt -> bcit', self.U.t(), x)
 
-        # ② 应用谱域滤波器：对每个频率分量乘以对应的可学习参数
-        #    self.theta 的形状为 (N,)，扩展后形状 (1, N, 1) 与 x_hat 按元素相乘
-        x_hat_filtered = x_hat * self.theta.view(1, self.N, 1)
+        # ────────────── ② 谱域滤波器作用 ──────────────
+        # 原来 theta 的形状为 (N,)，现在改为 (N, out_channels)
+        # 对于每个输入通道，都要针对每个输出通道进行滤波，即对每个频率分量 n 乘以 theta[n, out_channel]
+        # 具体做法：
+        #   1. 将 x_hat 扩展一维，变为 (B, C, N, 1, T)
+        #   2. 将 theta 扩展为 (1, 1, N, out_channels, 1)
+        #   3. 按照节点（频率）维度对应相乘，得到 x_hat_filtered 的形状 (B, C, N, out_channels, T)
+        x_hat = x_hat.unsqueeze(3)                           # (B, C, N, 1, T)
+        theta = self.theta.unsqueeze(0).unsqueeze(0).unsqueeze(-1)  # (1, 1, N, out_channels, 1)
+        x_hat_filtered = x_hat * theta                       # (B, C, N, out_channels, T)
 
-        # ③ 逆图傅里叶变换：将过滤后的信号转换回节点域
-        y = torch.matmul(self.U, x_hat_filtered)  # 形状: (batch, N, in_features)
+        # ────────────── ③ 逆图傅里叶变换 ──────────────
+        # 将过滤后的频域信号转换回节点域：
+        # 对于每个输入通道和每个输出通道，利用 U 做逆变换，即：
+        #   对于每个 b, c, out, t，计算 y[b, c, out, :, t] = U @ x_hat_filtered[b, c, :, out, t]
+        # 这里使用 einsum，其中 U 的形状为 (N, N)，x_hat_filtered 的形状为 (B, C, N, out_channels, T)
+        # 计算后 y 的形状为 (B, C, out_channels, N, T)
+        y = torch.einsum('in, bcnot -> bcoit', self.U, x_hat_filtered)
 
+        # ────────────── ④ 对所有输入通道累加 ──────────────
+        # 将 in_channels（C）维度的结果累加，得到输出形状 (B, out_channels, N, T)
+        y = y.sum(dim=1)
         return y
-

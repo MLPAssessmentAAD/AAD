@@ -26,16 +26,16 @@ class ChannelWiseAttention(nn.Module):
     def forward(self, x):
         """
         Args:
-            x: 输入信号，形状 (batch_size, num_channels, num_features)
+            x: 输入信号，形状 (batch_size, C, num_channels, num_features)
         Returns:
-            y: 输出信号，形状 (batch_size, num_channels, num_features)
+            y: 输出信号，形状 (batch_size, C, num_channels, num_features)
         """
-        multiplier = self.avg_pool(x)  # (batch, num_channels, 1)
-        multiplier = multiplier.squeeze(-1)  # (batch, num_channels)
+        multiplier = self.avg_pool(x)  # (batch, C, num_channels, 1)
+        multiplier = multiplier.squeeze(-1)  # (batch, C, num_channels)
         multiplier = self.tanh(self.fc1(multiplier))
         multiplier = self.fc2(multiplier)   # (batch, num_channels)
         multiplier = multiplier.unsqueeze(-1)  # (batch, num_channels, 1)
-        multiplier = multiplier.expand(-1, -1, self.num_features)  # (batch, num_channels, num_features)
+        multiplier = multiplier.expand(-1, -1, -1, self.num_features)  # (batch, num_channels, num_features)
 
         y = x * multiplier
 

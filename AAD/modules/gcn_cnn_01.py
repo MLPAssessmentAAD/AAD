@@ -3,7 +3,7 @@ import modules.spectual_graph_conv as sgc
 import torch
 
 class SIMPLE_GCN(nn.Module):
-    def __init__(self, adj_matrix_tensor):
+    def __init__(self, out_channel, A):
         super(SIMPLE_GCN, self).__init__()
 
         # 时域卷积
@@ -11,11 +11,7 @@ class SIMPLE_GCN(nn.Module):
         self.bn0 = nn.BatchNorm2d(1, momentum=0.9)
 
         # 图卷积
-        self.sgc1 = sgc.SpectralGraphConv(in_features=128, out_features=128, A=adj_matrix_tensor)
-        self.sgc2 = sgc.SpectralGraphConv(in_features=128, out_features=128, A=adj_matrix_tensor)
-        self.sgc3 = sgc.SpectralGraphConv(in_features=128, out_features=128, A=adj_matrix_tensor)
-        self.sgc4 = sgc.SpectralGraphConv(in_features=128, out_features=128, A=adj_matrix_tensor)
-        self.sgc5 = sgc.SpectralGraphConv(in_features=128, out_features=128, A=adj_matrix_tensor)
+        self.sgc = sgc.SpectralGraphConv(out_channels=out_channel, A=A)
         self.bn1 = nn.BatchNorm2d(5, momentum=0.9)
 
         # 时空卷积
@@ -46,15 +42,9 @@ class SIMPLE_GCN(nn.Module):
         x_eeg = x_eeg.unsqueeze(1)
         x_eeg = self.time_conv(x_eeg)
         x_eeg = self.bn0(x_eeg)
-        x_eeg = x_eeg.squeeze(1)
 
         # GCN部分
-        x_eeg_1 = self.sgc1(x_eeg).unsqueeze(1)
-        x_eeg_2 = self.sgc2(x_eeg).unsqueeze(1)
-        x_eeg_3 = self.sgc3(x_eeg).unsqueeze(1)
-        x_eeg_4 = self.sgc4(x_eeg).unsqueeze(1)
-        x_eeg_5 = self.sgc5(x_eeg).unsqueeze(1)
-        x_eeg = torch.cat((x_eeg_1, x_eeg_2, x_eeg_3, x_eeg_4, x_eeg_5), dim=1)  # (N, 5, 64, 128)
+        x_eeg = self.sgc(x_eeg)
         x_eeg = self.elu(x_eeg)
         x_eeg = self.bn1(x_eeg)
 
